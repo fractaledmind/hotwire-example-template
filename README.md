@@ -1024,3 +1024,339 @@ use Trix Editor interface to figure out the cursor's position
 +
        this.toggle(true)
 ```
+
+## Write-time mentions (revisited)
+
+Accessing User records mentioned in a Message
+
+An [ActionText::RichText][] instance can access its related
+[attachables][] through its [ActionText::Content][]-wrapped `body`
+attribute.
+
+When a `User` is mentioned, they'll be attached to the `Message`
+record's rich text as a `User`, so when iterating through the
+attachables, we'll want to ignore other records that aren't `User`
+instances:
+
+```diff
+--- a/app/models/message.rb
++++ b/app/models/message.rb
+ class Message < ApplicationRecord
+   has_rich_text :content
++
++  def mentioned_users
++    content.body.attachables.select { |attachable| attachable.is_a? User }
++  end
+ end
+```
+
+[ActionText::RichText]: https://edgeapi.rubyonrails.org/classes/ActionText/RichText.html
+[ActionText::Content]: https://edgeapi.rubyonrails.org/classes/ActionText/Content.html
+[attachables]: https://edgeapi.rubyonrails.org/classes/ActionText/Content.html#method-i-attachables
+
+Once the delegation is in place, we can access the related
+`mentioned_users` directly from the `Message` instance:
+
+```diff
+--- a/app/controllers/messages_controller.rb
++++ b/app/controllers/messages_controller.rb
+     if @message.save
+-      redirect_to @message, notice: "Message was successfully created."
++      redirect_to @message, notice: "Message was successfully created. Mentioned #{@message.mentioned_users.pluck(:name).to_sentence}"
+     else
+       render :new, status: :unprocessable_entity
+     end
+```
+
+```sh
+git diff HEAD~9 app/ config/
+```
+
+```diff
+diff --git a/app/assets/stylesheets/application.css b/app/assets/stylesheets/application.css
+index 288b9ab..fc1ae86 100644
+--- a/app/assets/stylesheets/application.css
++++ b/app/assets/stylesheets/application.css
+@@ -13,3 +13,6 @@
+  *= require_tree .
+  *= require_self
+  */
++
++[hidden]                { display: none !important; }
++[aria-selected="true"]  { outline: 2px dotted black; }
+diff --git a/app/controllers/mentions_controller.rb b/app/controllers/mentions_controller.rb
+new file mode 100644
+index 0000000..75c98f4
+--- /dev/null
++++ b/app/controllers/mentions_controller.rb
+@@ -0,0 +1,5 @@
++class MentionsController < ApplicationController
++  def index
++    @users = User.order(username: :asc).username_matching_handle params[:username]
++  end
++end
+diff --git a/app/controllers/messages_controller.rb b/app/controllers/messages_controller.rb
+index e557a81..1da65cd 100644
+--- a/app/controllers/messages_controller.rb
++++ b/app/controllers/messages_controller.rb
+@@ -25,7 +25,7 @@ class MessagesController < ApplicationController
+
+     respond_to do |format|
+       if @message.save
+-        format.html { redirect_to @message, notice: "Message was successfully created." }
++        format.html { redirect_to @message, notice: "Message was successfully created. Mentioned #{@message.mentioned_users.pluck(:name).to_sentence}" }
+         format.json { render :show, status: :created, location: @message }
+       else
+         format.html { render :new, status: :unprocessable_entity }
+diff --git a/app/controllers/users_controller.rb b/app/controllers/users_controller.rb
+index 14a1eda..5787918 100644
+--- a/app/controllers/users_controller.rb
++++ b/app/controllers/users_controller.rb
+@@ -59,7 +59,10 @@ class UsersController < ApplicationController
+   private
+     # Use callbacks to share common setup or constraints between actions.
+     def set_user
+-      @user = User.find(params[:id])
++      users_with_id = User.where id: params[:id]
++      users_with_username_matching_handle = User.username_matching_handle params[:id]
++
++      @user = users_with_id.or(users_with_username_matching_handle).first!
+     end
+
+     # Only allow a list of trusted parameters through.
+diff --git a/app/javascript/controllers/mentions_controller.js b/app/javascript/controllers/mentions_controller.js
+new file mode 100644
+index 0000000..848ed71
+--- /dev/null
++++ b/app/javascript/controllers/mentions_controller.js
+@@ -0,0 +1,118 @@
++import { Controller } from "@hotwired/stimulus"
++import Combobox from "https://cdn.skypack.dev/@github/combobox-nav"
++
++export default class extends Controller {
++  static get targets() { return [ "editor", "listbox", "submit" ] }
++  static get values() { return { wordPattern: String, breakPattern: String } }
++
++  disconnect() {
++    this.toggle(false)
++  }
++
++  // Actions
++
++  insert({ target: { value, innerHTML } }) {
++    const { editor } = this.editorTarget
++    const selectedRange = findWordBoundsFromCursor(editor, this.breakPatternValue)
++
++    editor.setSelectedRange(selectedRange)
++    editor.deleteInDirection("backward")
++    editor.insertAttachment(new Trix.Attachment({ sgid: value, content: innerHTML }))
++  }
++
++  expand({ target: { editor } }) {
++    const mention = findMentionFromCursor(editor, this.wordPatternValue, this.breakPatternValue)
++
++    if (mention) {
++      const { bottom, left } = editor.getClientRectAtPosition(editor.getPosition())
++      this.listboxTarget.style.top = bottom + "px"
++      this.listboxTarget.style.left = left + "px"
++
++      this.toggle(true)
++      this.submitTarget.value = mention
++      this.submitTarget.click()
++    } else {
++      this.toggle(false)
++    }
++  }
++
++  collapseOnEscape({ key }) {
++    if (key == "Escape") this.collapse()
++  }
++
++  collapseOnCursorExit({ target: { editor } }) {
++    const mention = findMentionFromCursor(editor, this.wordPatternValue, this.breakPatternValue)
++
++    if (mention) return
++    else this.toggle(false)
++  }
++
++  collapse() {
++    if (this.editorTarget.hasAttribute("aria-activedescendant")) return
++    else this.toggle(false)
++  }
++
++  // Private
++
++  toggle(expanded) {
++    if (expanded) {
++      this.listboxTarget.hidden = false
++      this.listboxTarget.setAttribute("role", "listbox")
++      this.editorTarget.setAttribute("role", "combobox")
++      this.editorTarget.setAttribute("autocomplete", "username")
++      this.editorTarget.setAttribute("autocorrect", "off")
++
++      this.combobox?.destroy()
++      this.combobox = new Combobox(this.editorTarget, this.listboxTarget)
++      this.combobox.start()
++    } else {
++      this.listboxTarget.hidden = true
++      this.listboxTarget.removeAttribute("role")
++      this.editorTarget.setAttribute("role", "textbox")
++      this.editorTarget.removeAttribute("autocomplete")
++      this.editorTarget.removeAttribute("autocorrect")
++
++      this.combobox?.destroy()
++    }
++  }
++}
++
++function findMentionFromCursor(editor, wordPattern, breakPattern) {
++  const [ start, end ] = findWordBoundsFromCursor(editor, breakPattern)
++  const word = editor.getDocument().toString().slice(start, end)
++  const [ mention ] = word.match(new RegExp(wordPattern)) || []
++
++  return mention
++}
++
++function findWordBoundsFromCursor(editor, breakPattern) {
++  const content = editor.getDocument().toString()
++  const position = editor.getPosition()
++  breakPattern = new RegExp(breakPattern)
++
++  return findWordBoundsFromStringAtPosition(content, position, (char) => breakPattern.test(char))
++}
++
++function findWordBoundsFromStringAtPosition(string, position, characterMatchesWordBoundary) {
++  let start = position
++  let index = position
++  while(--index >= 0) {
++    const char = string.charAt(index)
++    if (characterMatchesWordBoundary(char)) break
++    start = index
++  }
++
++  let end = position
++    index = position
++  while(index < string.length) {
++    const char = string.charAt(index)
++    if (characterMatchesWordBoundary(char)) break
++    end = ++index
++  }
++
++  if (start != end) {
++    return [ start, end ]
++  } else {
++    return [ -1, -1 ]
++  }
++}
+diff --git a/app/models/message.rb b/app/models/message.rb
+index db63a1f..339a136 100644
+--- a/app/models/message.rb
++++ b/app/models/message.rb
+@@ -1,3 +1,7 @@
+ class Message < ApplicationRecord
+   has_rich_text :content
++
++  def mentioned_users
++    content.body.attachables.select { |attachable| attachable.is_a? User }
++  end
+ end
+diff --git a/app/models/user.rb b/app/models/user.rb
+index 379658a..35bc13e 100644
+--- a/app/models/user.rb
++++ b/app/models/user.rb
+@@ -1,2 +1,15 @@
+ class User < ApplicationRecord
++  include ActionText::Attachable
++
++  scope :username_matching_handle, ->(handle) { where <<~SQL, handle.delete_prefix("@") + "%" }
++    username ILIKE ?
++  SQL
++
++  def to_trix_content_attachment_partial_path
++    "mentions/mention"
++  end
++
++  def to_attachable_partial_path
++    "users/attachable"
++  end
+ end
+diff --git a/app/views/mentions/_mention.html.erb b/app/views/mentions/_mention.html.erb
+new file mode 100644
+index 0000000..3801489
+--- /dev/null
++++ b/app/views/mentions/_mention.html.erb
+@@ -0,0 +1 @@
++<%= user.name %>
+diff --git a/app/views/mentions/index.html.erb b/app/views/mentions/index.html.erb
+new file mode 100644
+index 0000000..144e96b
+--- /dev/null
++++ b/app/views/mentions/index.html.erb
+@@ -0,0 +1,8 @@
++<turbo-frame id="mentions">
++  <% @users.each do |user| %>
++    <button type="button" name="sgid" value="<%= user.attachable_sgid %>" id="<%= dom_id user, :mention %>" role="option"
++            data-action="click->mentions#insert">
++      <%= render partial: user.to_trix_content_attachment_partial_path, locals: { user: user } %>
++    </button>
++  <% end %>
++</turbo-frame>
+diff --git a/app/views/messages/_form.html.erb b/app/views/messages/_form.html.erb
+index 3d597fc..a41e05e 100644
+--- a/app/views/messages/_form.html.erb
++++ b/app/views/messages/_form.html.erb
+@@ -1,4 +1,5 @@
+-<%= form_with(model: message) do |form| %>
++<%= form_with(model: message, data: { controller: "mentions", action: "trix-change->mentions#expand",
++                                      mentions_word_pattern_value: /^@(.*?)$/.source, mentions_break_pattern_value: /\s/.source }) do |form| %>
+   <% if message.errors.any? %>
+     <div id="error_explanation">
+       <h2><%= pluralize(message.errors.count, "error") %> prohibited this message from being saved:</h2>
+@@ -13,10 +14,26 @@
+
+   <div class="field">
+     <%= form.label :content %>
+-    <%= form.rich_text_area :content %>
++    <%= form.rich_text_area :content, data: { mentions_target: "editor",
++                                              action: "
++                                                keydown->mentions#collapseOnEscape
++                                                keydown->mentions#collapseOnCursorExit
++                                                trix-blur->mentions#collapse
++                                               " } %>
++
++    <button form="new_mention" name="username" data-mentions-target="submit" hidden>Search</button>
+   </div>
+
+   <div class="actions">
+     <%= form.submit %>
+   </div>
++
++  <fieldset class="border-0 p-0">
++    <legend class="sr-only">Mentions</legend>
++
++    <turbo-frame id="mentions" class="absolute bg-white flex flex-col p-1" hidden
++                 data-mentions-target="listbox"></turbo-frame>
++  </fieldset>
+ <% end %>
++
++<form id="new_mention" action="<%= mentions_path %>" data-turbo-frame="mentions"></form>
+diff --git a/app/views/users/_attachable.html.erb b/app/views/users/_attachable.html.erb
+new file mode 100644
+index 0000000..f6a0795
+--- /dev/null
++++ b/app/views/users/_attachable.html.erb
+@@ -0,0 +1,3 @@
++<%= link_to user_path(user) do %>
++  <%= render partial: user.to_trix_content_attachment_partial_path, locals: { user: user } %>
++<% end %>
+diff --git a/config/routes.rb b/config/routes.rb
+index be7f5ea..d8aeaf2 100644
+--- a/config/routes.rb
++++ b/config/routes.rb
+@@ -1,5 +1,6 @@
+ Rails.application.routes.draw do
+   # Define your application routes per the DSL in https://guides.rubyonrails.org/routing.html
++  resources :mentions, only: :index
+   resources :messages
+   resources :users
+```
