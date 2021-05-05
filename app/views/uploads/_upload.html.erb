@@ -1,0 +1,16 @@
+<section id="<%= dom_id upload %>">
+  <h1>Uploaded at <time><%= upload.created_at %></time></h1>
+
+  <%= image_tag upload.file %>
+
+  <% if upload.file.analyzed? %>
+    <dl>
+      <% upload.file.metadata.each do |key, value| %>
+        <dt><%= key %></dt>
+        <dd><%= value %></dd>
+      <% end %>
+    </dl>
+  <% else %>
+    <p>Analyzing...</p>
+  <% end %>
+</section>
