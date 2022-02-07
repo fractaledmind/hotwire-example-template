@@ -123,3 +123,112 @@ For example, a requests to <http://localhost:3000/invitation_codes/abc123> would
 result in a response with `abc123` as the invitation code.
 
 https://user-images.githubusercontent.com/2575027/154692773-cc91ff39-63e3-4e4e-857d-0657ea39d56e.mov
+
+## Pushing alerts
+
+First, we'll introduce the `app/views/application/_alert.html.erb` view partial:
+
+```erb
+<%# app/views/application/_alert.html.erb %>
+
+<div role="alert" class="border border-solid rounded-md m-4 p-4">
+  <%= yield %>
+</div>
+```
+
+Next, we'll nest a `<template>` element within the `<button type="button">`.
+Within the `<template>` element, we'll nest a [`<turbo-stream>`][turbo-stream]
+element that's configured to [append][] its contents to an element marked with
+[`[id="alerts"]`][id-attr]. Within the `<turbo-stream>` element's nested
+`<template>`, we'll render the `app/views/application/_alert.html.erb` partial
+with `Copied to clipboard` as its contents:
+
+[turbo-stream]: https://turbo.hotwired.dev/reference/streams
+[append]: https://developer.mozilla.org/en-US/docs/Web/API/Element/append
+[id-attr]: https://developer.mozilla.org/en-US/docs/Web/HTML/Global_attributes/id
+
+```diff
+--- a/app/views/invitation_codes/show.html.erb
++++ b/app/views/invitation_codes/show.html.erb
+   <button type="button" value="<%= @invitation_code %>"
+           data-controller="clipboard"
+           data-action="click->clipboard#copy">
+     Copy to clipboard
++
++    <template>
++      <turbo-stream action="append" target="alerts">
++        <template>
++          <%= render "alert" do %>
++            Copied to clipboard
++          <% end %>
++        </template>
++      </turbo-stream>
++    </template>
+   </button>
+```
+
+The `clone` controller retains access to an array of `<template>` elements
+through its [`template` targets][stimulus-target]. The `append` action iterates
+through the list, [clones][cloneNode] their [content][template-content], then
+appends it to the document:
+
+[template-content]: https://developer.mozilla.org/en-US/docs/Web/API/HTMLTemplateElement/content
+[cloneNode]: https://developer.mozilla.org/en-US/docs/Web/API/Node/cloneNode
+[stimulus-target]: https://stimulus.hotwired.dev/reference/targets
+
+```javascript
+// app/javascript/controllers/clone_controller.js
+
+import { Controller } from "@hotwired/stimulus"
+
+export default class extends Controller {
+  static targets = [ "template" ]
+
+  append() {
+    for (const { content } of this.templateTargets) {
+      this.element.append(content.cloneNode(true))
+    }
+  }
+}
+```
+
+We'll treat the outer `<template>` element as a `clone` target by marking it
+with the `[data-clone-target="template"]` attribute, and we'll route `click`
+events to a `clone` controller to [append][] the `<template>` element's contents
+to the document whenever the `<button>` element is clicked:
+
+```diff
+--- a/app/views/invitation_codes/show.html.erb
++++ b/app/views/invitation_codes/show.html.erb
+   <button type="button" value="<%= @invitation_code %>"
+-          data-controller="clipboard"
++          data-controller="clipboard clone"
+-          data-action="click->clipboard#copy">
++          data-action="click->clipboard#copy click->clone#append">
+     Copy to clipboard
+
+-    <template>
++    <template data-clone-target="template">
+       <turbo-stream action="append" target="alerts">
+         <template>
+           <%= render "alert" do %>
+             Copied to clipboard
+           <% end %>
+         </template>
+       </turbo-stream>
+     </template>
+   </button>
+```
+
+Finally, we'll render an element with `[id="alerts"]` so that the
+`<turbo-stream>` operation can append its contents:
+
+```diff
+--- a/app/views/invitation_codes/show.html.erb
++++ b/app/views/invitation_codes/show.html.erb
++<div id="alerts" class="absolute bottom-0 right-0 w-96"></div>
++
+ <fieldset>
+```
+
+https://user-images.githubusercontent.com/2575027/154692364-0e5783e6-6197-4cff-95b4-256d80482896.mov
