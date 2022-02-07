@@ -232,3 +232,56 @@ Finally, we'll render an element with `[id="alerts"]` so that the
 ```
 
 https://user-images.githubusercontent.com/2575027/154692364-0e5783e6-6197-4cff-95b4-256d80482896.mov
+
+## Popping alerts
+
+```diff
+--- a/app/views/application/_alert.html.erb
++++ b/app/views/application/_alert.html.erb
+-<div role="alert" class="border border-solid rounded-md m-4 p-4">
++<div role="alert" class="border border-solid rounded-md m-4 p-4"
++     data-controller="auto-remove" data-auto-remove-delay-value="2000">
+   <%= yield %>
+ </div>
+```
+
+```javascript
+// app/javascript/controller/auto_remove_controller.js
+
+import { Controller } from "@hotwired/stimulus"
+
+export default class extends Controller {
+  static values = { delay: Number }
+
+  connect() {
+    this.timeoutID = setTimeout(() => this.element.remove(), this.delayValue)
+  }
+
+  disconnect() {
+    clearTimeout(this.timeoutID)
+  }
+}
+```
+
+We're demonstrating a simplified version of this interaction. Production-ready
+versions might animate the alert into and out of frame, delay removal if the
+contents of the alert have focus, or prompt the user with a button to dismiss
+the alert.
+
+https://user-images.githubusercontent.com/2575027/154692670-9d718b67-7f1e-453e-8be8-c7617c86a915.mov
+
+## Wrapping up
+
+Included:
+
+* an entirely client-side interaction augmented by server-generated HTML
+* declaratively encoded DOM operations through `<template>` and `<turbo-stream>`
+  elements
+* three general purpose controllers with potential for re-use across the
+  codebase
+
+Excluded:
+
+* parallel alert implementations split across the client-server boundary
+* transforming JSON into HTML
+* `XMLHttpRequest`, `fetch`
